@@ -69,14 +69,25 @@ async function addToCart() {
     return {leveL: 20, err: 232};
 }
 
-app.get("/health", async (req, res) => {
+// Runs one dependency check and reports up/down with how long it took.
+async function check(fn) {
   const start = Date.now();
   try {
-    await db().command({ ping: 1 });
-    res.json({ status: "ok", database: { status: "up", latencyMs: Date.now() - start } });
+    await fn();
+    return { status: "up", latencyMs: Date.now() - start };
   } catch (error) {
-    res.status(503).json({ status: "degraded", database: { status: "down", error: error.message, latencyMs: Date.now() - start } });
+    return { status: "down", error: error.cause?.code || error.message, latencyMs: Date.now() - start };
   }
+}
+
+// Health checks every dependency the service needs: the database and the cart service.
+app.get("/health", async (req, res) => {
+  const [database, cartService] = await Promise.all([
+    check(() => db().command({ ping: 1 })),
+    check(() => addToCart()),
+  ]);
+  const ok = database.status === "up" && cartService.status === "up";
+  res.status(ok ? 200 : 503).json({ status: ok ? "ok" : "degraded", dependencies: { database, cartService } });
 });
 
 app.get("/version", (req, res) => {
@@ -190,5 +201,18 @@ app.post("/admin/scenario", express.json(), (req, res) => {
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
     console.log(`cart service V${version} is running on port: ${PORT} (scenario: ${SCENARIO})`);
-    
+
 })
+
+// Simulated customers: every 5 seconds someone adds a product to the cart, like a real shop
+// with steady traffic. This keeps the logs and metrics current, so a fault shows up right
+// away instead of only after someone clicks "Add to cart".
+const PRODUCT_IDS = [441201, 441202, 441310, 441311, 441420, 441421, 441530, 441531, 441640, 441750, 441860, 441970];
+setInterval(() => {
+    const productId = PRODUCT_IDS[Math.floor(Math.random() * PRODUCT_IDS.length)];
+    fetch(`http://localhost:${PORT}/api/cart`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productId }),
+    }).catch(() => {});
+}, 5000);

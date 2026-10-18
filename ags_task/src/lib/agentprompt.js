@@ -6,30 +6,41 @@ const MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
 // When Google is overloaded (503) or rate-limits us (429), try these next.
 const FALLBACK_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
 const max_turns = 6;
-export const timeout_ms = 60_000;
+// Limit for the whole investigation.
+export const timeout_ms = 120_000;
+// Limit for one Gemini request. Sometimes a request hangs instead of answering "busy";
+// after this long we give up on it and try the next model.
+const call_timeout_ms = 20_000;
 
 // The last model that answered; tried first next time so we don't keep waiting on a busy one.
 let workingModel = null;
 
-// Calls Gemini, retrying once and then falling back to lighter models if the model is busy.
+// Calls Gemini. If the model is busy (503), rate-limits us (429) or doesn't answer within
+// call_timeout_ms, it retries and then falls back to lighter models.
 async function generate(request, signal) {
   const models = [...new Set([workingModel, MODEL, ...FALLBACK_MODELS].filter(Boolean))];
-  let lastError;
+  let lastProblem;
 
   for (const model of models) {
     for (let attempt = 0; attempt < 2; attempt++) {
+      const callSignal = AbortSignal.any([signal, AbortSignal.timeout(call_timeout_ms)]);
       try {
-        const response = await ai.models.generateContent({ ...request, model, config: { ...request.config, abortSignal: signal } });
+        const response = await ai.models.generateContent({ ...request, model, config: { ...request.config, abortSignal: callSignal } });
         workingModel = model;
         return { response, model };
       } catch (error) {
-        if (signal.aborted || ![429, 503].includes(error.status)) throw cleanError(error);
-        lastError = error;
+        if (signal.aborted) throw error;
+        const hung = callSignal.aborted;
+        if (!hung && ![429, 503].includes(error.status)) throw cleanError(error);
+
+        lastProblem = hung ? `no answer from ${model} within ${call_timeout_ms / 1000}s` : `${model} returned ${error.status}`;
+        console.warn(`gemini: ${lastProblem}, trying again`);
+        if (hung) break; // a model that hangs usually keeps hanging: move straight to the next one
         if (attempt === 0) await new Promise((r) => setTimeout(r, 1500));
       }
     }
   }
-  throw new Error(`The AI model is busy right now (${lastError.status}). Wait a minute and try again.`);
+  throw new Error(`The AI model is busy right now (${lastProblem}). Wait a minute and try again.`);
 }
 
 // Gemini errors arrive as a JSON string; pull out the readable message.

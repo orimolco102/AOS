@@ -1,0 +1,52 @@
+services:
+
+  app:
+    build: ./ags_task                 # build the image from ags_task/Dockerfile
+    container_name: frontweb
+    ports:
+      - "3000:3000"                   # open the shop to the browser: http://localhost:3000
+    env_file: ./ags_task/.env         # GEMINI_API_KEY, GEMINI_MODEL, ...
+    environment:
+      # Inside Docker, "localhost" is the container itself; other containers are reached by service name.
+      SERVICE_URL: http://backend:5000
+      MONGO_URI: mongodb://${DBUSER}:${DBPASS}@mongodb:27017/ags?authSource=admin
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  backend:
+    build: ./backend/demo-service     # build the image from backend/demo-service/Dockerfile
+    container_name: backend
+    expose:
+      - "5000"                        # only other containers need to reach it
+    env_file: ./backend/demo-service/.env
+    environment:
+      PORT: 5000
+      MONGO_URI: mongodb://${DBUSER}:${DBPASS}@mongodb:27017/cart?authSource=admin
+      FAKEDB: mongodb://no-such-database:27017/cart   # host that doesn't exist, for the db_down scenario
+      SCENARIO: ${SCENARIO:-healthy}
+    healthcheck:
+      # /version doesn't touch the database, so the service counts as up even in db_down.
+      test: ["CMD", "wget", "-qO-", "http://localhost:5000/version"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    depends_on:
+      mongodb:
+        condition: service_healthy
+
+  mongodb:
+    image: mongo:7                    # the official MongoDB image from Docker Hub
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${DBUSER}
+      MONGO_INITDB_ROOT_PASSWORD: ${DBPASS}
+    volumes:
+      - mongodata:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  mongodata:

@@ -23,7 +23,9 @@ export async function POST(request) {
         send({ type: "report", report });
         saved = { createdAt: new Date(), toolResults, report };
       } catch (error) {
-        const message = signal.aborted ? "the investigation closed. timeout or the browser has been closed" : error.message;
+        const message = !signal.aborted ? error.message
+          : request.signal.aborted ? "the investigation closed because the browser was closed"
+          : `the investigation took longer than ${timeout_ms / 1000} seconds. The AI model may be overloaded, try again in a minute`;
         send({ type: "error", message });
       }
 

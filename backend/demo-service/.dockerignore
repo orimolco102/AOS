@@ -1,0 +1,9 @@
+# Keep these out of the image: node_modules is installed inside the image,
+# and .env holds secrets (Compose passes them in at runtime instead).
+node_modules
+.env
+.env.*
+!.env.example
+Dockerfile
+.dockerignore
+npm-debug.log*
